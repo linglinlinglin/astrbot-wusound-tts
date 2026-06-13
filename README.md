@@ -35,11 +35,18 @@ tts_endpoint: https://v1.wusound.cn/api/tts/simple-generate
 voice_id: 你的悟声角色 ID
 prompt_id: 可选的风格 ID
 audio_format: mp3
+send_as: file
+use_context_send_message: true
+prefer_remote_url: true
 max_output_tokens: 80
 translate_to_japanese: true
 ```
 
 `max_output_tokens` 是短回复阈值。超过这个估算 token 数就不会生成音频，避免长回复拖慢群聊。
+
+`prefer_remote_url` 建议保持开启。悟声会返回公网 mp3 地址，直接让平台从 URL 发送文件通常比先下载到 AstrBot 本地再发送更稳定，尤其是 Docker、远程适配器或 OneBot 分离部署时。
+
+`send_as` 默认是 `file`，会发送音频文件。可以改成 `record` 尝试直接发送语音，但不同平台对语音格式和组件支持差异很大，建议先用文件跑通。
 
 ## 悟声接口适配
 
@@ -70,13 +77,13 @@ AstrBot AI 回复
 -> 估算 token 数并判断是否低于阈值
 -> 使用当前会话 LLM 翻译成日语
 -> 调用悟声实时 TTS
--> 下载或解析音频
--> 以文件形式发送到当前会话
+-> 优先读取悟声返回的远程 mp3 URL
+-> 使用 AstrBot 主动消息接口发送到当前会话
 ```
 
 ## 已知限制
 
 - 翻译依赖当前会话可用的 LLM；如果没有可用 LLM，插件会直接把原文送去 TTS。
-- 不同平台对文件消息的支持不同，OneBot 通常可用，其他平台需要实测。
+- 不同平台对文件消息和语音消息的支持不同；如果文件能发、语音不能发，通常是平台适配器限制。
 - 当前 token 统计是轻量估算，不是精确模型 token 计数。
 - 悟声接口字段如果与默认值不一致，优先通过 `payload_template` 适配。

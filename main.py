@@ -5,6 +5,7 @@ import math
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +13,20 @@ import aiohttp
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import File, Plain
+from astrbot.api.message_components import File, Plain, Record
 from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 
 PLUGIN_NAME = "astrbot_plugin_wusound_tts"
 DEFAULT_TTS_ENDPOINT = "https://v1.wusound.cn/api/tts/simple-generate"
+
+
+@dataclass
+class GeneratedAudio:
+    name: str
+    path: Path | None = None
+    url: str | None = None
 
 
 @register(
@@ -57,11 +65,9 @@ class WusoundTtsPlugin(Star):
         async with self.semaphore:
             try:
                 spoken_text = await self._translate_to_japanese(event, source_text)
-                audio_path = await self._generate_audio_file(spoken_text)
+                audio = await self._generate_audio(spoken_text)
                 event.set_extra("_wusound_tts_sending", True)
-                await event.send(
-                    MessageChain([File(name=audio_path.name, file=str(audio_path))])
-                )
+                await self._send_audio(event, audio)
             except Exception as exc:
                 logger.warning(f"悟声 TTS 音频生成失败: {exc}")
 
@@ -128,7 +134,7 @@ class WusoundTtsPlugin(Star):
         translated_text = getattr(response, "completion_text", None) or str(response)
         return self._clean_text(translated_text) or text
 
-    async def _generate_audio_file(self, spoken_text: str) -> Path:
+    async def _generate_audio(self, spoken_text: str) -> GeneratedAudio:
         if self.session is None or self.session.closed:
             await self.initialize()
         if self.session is None:
@@ -153,12 +159,38 @@ class WusoundTtsPlugin(Star):
             content_type = response.headers.get("Content-Type", "")
             if content_type.startswith("audio/"):
                 audio_bytes = await response.read()
+                self._validate_audio_size(audio_bytes)
+                return self._save_audio_file(audio_bytes)
             else:
                 data = await response.json(content_type=None)
-                audio_bytes = await self._read_audio_from_json(data)
+                return await self._read_audio_from_json(data)
 
-        self._validate_audio_size(audio_bytes)
-        return self._save_audio_file(audio_bytes)
+    async def _send_audio(self, event: AstrMessageEvent, audio: GeneratedAudio) -> None:
+        component = self._build_audio_component(audio)
+        message_chain = MessageChain([component])
+
+        if self._get_bool("use_context_send_message", True):
+            await self.context.send_message(event.unified_msg_origin, message_chain)
+            return
+
+        await event.send(message_chain)
+
+    def _build_audio_component(self, audio: GeneratedAudio) -> File | Record:
+        send_as = self._get_str("send_as", "file").lower()
+        if send_as == "record":
+            if audio.url:
+                return Record.fromURL(audio.url)
+            if audio.path:
+                return Record.fromFileSystem(str(audio.path))
+            raise ValueError("没有可发送的语音来源")
+
+        if audio.url and self._get_bool("prefer_remote_url", True):
+            return File(name=audio.name, url=audio.url)
+        if audio.path:
+            return File(name=audio.name, file=str(audio.path))
+        if audio.url:
+            return File(name=audio.name, url=audio.url)
+        raise ValueError("没有可发送的音频文件来源")
 
     def _build_tts_payload(self, text: str) -> dict[str, Any]:
         template = self._get_str("payload_template", "")
@@ -185,7 +217,7 @@ class WusoundTtsPlugin(Star):
             raise ValueError("payload_template 必须渲染为 JSON 对象")
         return payload
 
-    async def _read_audio_from_json(self, data: dict[str, Any]) -> bytes:
+    async def _read_audio_from_json(self, data: dict[str, Any]) -> GeneratedAudio:
         audio_url = self._find_first_value(
             data,
             (
@@ -202,16 +234,24 @@ class WusoundTtsPlugin(Star):
         if audio_url:
             audio_url_text = str(audio_url)
             if audio_url_text.startswith(("http://", "https://")):
-                return await self._download_audio(audio_url_text)
+                name = self._build_audio_name_from_url(audio_url_text)
+                if self._get_bool("prefer_remote_url", True):
+                    return GeneratedAudio(name=name, url=audio_url_text)
+                audio_bytes = await self._download_audio(audio_url_text)
+                return self._save_audio_file(audio_bytes, fallback_name=name)
             if audio_url_text.startswith("data:audio/"):
-                return self._decode_base64_audio(audio_url_text)
+                audio_bytes = self._decode_base64_audio(audio_url_text)
+                self._validate_audio_size(audio_bytes)
+                return self._save_audio_file(audio_bytes)
 
         audio_base64 = self._find_first_value(
             data,
             ("audioBase64", "audio_base64", "audioContent", "audio_content"),
         )
         if audio_base64:
-            return self._decode_base64_audio(str(audio_base64))
+            audio_bytes = self._decode_base64_audio(str(audio_base64))
+            self._validate_audio_size(audio_bytes)
+            return self._save_audio_file(audio_bytes)
 
         if not audio_url:
             raise ValueError(f"悟声接口未返回音频 URL 或 base64: {data}")
@@ -235,13 +275,30 @@ class WusoundTtsPlugin(Star):
         encoded_audio += "=" * (-len(encoded_audio) % 4)
         return base64.b64decode(encoded_audio)
 
-    def _save_audio_file(self, audio_bytes: bytes) -> Path:
+    def _save_audio_file(
+        self,
+        audio_bytes: bytes,
+        fallback_name: str | None = None,
+    ) -> GeneratedAudio:
         output_dir = Path(get_astrbot_temp_path()) / "wusound_tts"
         output_dir.mkdir(parents=True, exist_ok=True)
-        suffix = self._get_str("audio_format", "mp3").lstrip(".") or "mp3"
-        audio_path = output_dir / f"wusound_{uuid.uuid4().hex}.{suffix}"
+        if fallback_name:
+            suffix = Path(fallback_name).suffix.lstrip(".") or self._get_audio_suffix()
+        else:
+            suffix = self._get_audio_suffix()
+        name = fallback_name or f"wusound_{uuid.uuid4().hex}.{suffix}"
+        audio_path = output_dir / name
         audio_path.write_bytes(audio_bytes)
-        return audio_path
+        return GeneratedAudio(name=audio_path.name, path=audio_path)
+
+    def _build_audio_name_from_url(self, audio_url: str) -> str:
+        name = Path(audio_url.split("?", 1)[0]).name
+        if name and "." in name:
+            return name
+        return f"wusound_{uuid.uuid4().hex}.{self._get_audio_suffix()}"
+
+    def _get_audio_suffix(self) -> str:
+        return self._get_str("audio_format", "mp3").lstrip(".") or "mp3"
 
     def _validate_audio_size(self, audio_bytes: bytes) -> None:
         max_audio_bytes = self._get_int("max_audio_bytes", 10 * 1024 * 1024)

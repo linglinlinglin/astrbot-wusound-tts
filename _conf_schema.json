@@ -29,6 +29,21 @@
     "type": "string",
     "default": "mp3"
   },
+  "send_as": {
+    "description": "发送方式：file 表示发送音频文件，record 表示尝试直接发送语音。",
+    "type": "string",
+    "default": "file"
+  },
+  "use_context_send_message": {
+    "description": "是否使用 AstrBot 主动消息接口发送音频。建议开启。",
+    "type": "bool",
+    "default": true
+  },
+  "prefer_remote_url": {
+    "description": "是否优先直接发送悟声返回的远程音频 URL。建议开启，可避免本地文件路径在适配器中不可见。",
+    "type": "bool",
+    "default": true
+  },
   "max_output_tokens": {
     "description": "AI 回复估算 token 数不超过该值时才生成音频。",
     "type": "int",
