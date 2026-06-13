@@ -61,6 +61,8 @@ class WusoundTtsPlugin(Star):
             return
         if not self._get_bool("enabled", True):
             return
+        if not self._is_event_allowed(event):
+            return
 
         source_text = self._extract_sent_plain_text(event)
         if not self._should_generate_audio(source_text):
@@ -96,12 +98,28 @@ class WusoundTtsPlugin(Star):
         async for result in self._run_mock_send_test(event, send_as="record"):
             yield result
 
+    @filter.command("wusound_where")
+    async def wusound_where(self, event: AstrMessageEvent):
+        """显示当前会话标识，方便配置白名单。"""
+        origin = str(getattr(event, "unified_msg_origin", "") or "")
+        group_id = self._extract_group_id(event, origin)
+        is_allowed = self._is_event_allowed(event)
+        yield event.plain_result(
+            "当前悟声 TTS 会话信息：\n"
+            f"group_id: {group_id or '未识别'}\n"
+            f"origin: {origin or '未识别'}\n"
+            f"allowed: {is_allowed}"
+        )
+
     async def _run_mock_send_test(
         self,
         event: AstrMessageEvent,
         send_as: str | None = None,
     ):
         event.set_extra("_wusound_tts_skip_auto", True)
+        if not self._is_event_allowed(event):
+            yield event.plain_result("当前会话不在悟声 TTS 白名单中，已跳过。")
+            return
         try:
             audio = self._generate_mock_audio()
             await self._send_audio(event, audio, send_as=send_as)
@@ -139,6 +157,47 @@ class WusoundTtsPlugin(Star):
         if token_count < self._get_int("min_output_tokens", 1):
             return False
         return not self._looks_like_non_spoken_text(text)
+
+    def _is_event_allowed(self, event: AstrMessageEvent) -> bool:
+        origins = self._get_list("allowed_origins")
+        group_ids = self._get_list("allowed_group_ids")
+        if not origins and not group_ids:
+            return True
+
+        origin = str(getattr(event, "unified_msg_origin", "") or "")
+        if origins and origin in origins:
+            return True
+
+        group_id = self._extract_group_id(event, origin)
+        if group_ids and group_id and group_id in group_ids:
+            return True
+
+        logger.debug(
+            f"悟声 TTS 已跳过非白名单会话: origin={origin}, group_id={group_id}"
+        )
+        return False
+
+    def _extract_group_id(self, event: AstrMessageEvent, origin: str) -> str:
+        for method_name in ("get_group_id", "get_groupid"):
+            method = getattr(event, method_name, None)
+            if callable(method):
+                group_id = method()
+                if group_id:
+                    return str(group_id)
+
+        message_obj = getattr(event, "message_obj", None)
+        if message_obj is not None:
+            for attr_name in ("group_id", "groupid"):
+                group_id = getattr(message_obj, attr_name, None)
+                if group_id:
+                    return str(group_id)
+
+        match = re.search(r"(?:GroupMessage|group|group_id)[:_](\d+)", origin)
+        if match:
+            return match.group(1)
+
+        numeric_parts = re.findall(r"\d+", origin)
+        return numeric_parts[-1] if numeric_parts else ""
 
     def _estimate_token_count(self, text: str) -> int:
         cjk_or_kana_count = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text))
@@ -460,3 +519,15 @@ class WusoundTtsPlugin(Star):
         if value is None:
             return default
         return str(value).lower() in {"1", "true", "yes", "on", "是", "开启"}
+
+    def _get_list(self, key: str) -> list[str]:
+        value = self.config.get(key, [])
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return [
+            item.strip()
+            for item in re.split(r"[\n,，]+", str(value))
+            if item.strip()
+        ]

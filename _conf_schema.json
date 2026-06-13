@@ -9,6 +9,16 @@
     "type": "string",
     "default": ""
   },
+  "allowed_group_ids": {
+    "description": "群聊白名单。填写允许启用 TTS 的群号，多个群号用换行或英文逗号分隔。留空表示不按群号限制。",
+    "type": "text",
+    "default": ""
+  },
+  "allowed_origins": {
+    "description": "会话白名单。填写完整 unified_msg_origin，多个值用换行或英文逗号分隔。留空表示不按会话标识限制。",
+    "type": "text",
+    "default": ""
+  },
   "tts_endpoint": {
     "description": "悟声同步实时生成语音接口地址。",
     "type": "string",

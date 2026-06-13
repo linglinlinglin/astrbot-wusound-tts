@@ -27,6 +27,25 @@ voice_id: 悟声语音角色 ID
 WUSOUND_API_KEY=你的悟声 API Key
 ```
 
+## 白名单
+
+建议至少配置 `allowed_group_ids`，避免插件在所有群聊里自动生成语音。
+
+```text
+allowed_group_ids:
+123456789
+987654321
+```
+
+也可以填写完整会话标识：
+
+```text
+allowed_origins:
+aiocqhttp:GroupMessage:123456789
+```
+
+两个白名单都留空时，插件会在所有会话生效。只要任意一个白名单命中，插件就会工作。自动 TTS 和 `/wusound_*_test` 测试命令都会受白名单限制。
+
 ## 常用配置
 
 ```text
@@ -80,11 +99,13 @@ prefer_remote_url: true
 /wusound_test
 /wusound_file_test
 /wusound_record_test
+/wusound_where
 ```
 
 `/wusound_test` 使用当前 `send_as` 配置。  
 `/wusound_file_test` 强制发送文件，用于确认文件链路。  
 `/wusound_record_test` 强制发送语音，用于确认 QQ/OneBot 是否支持语音气泡。
+`/wusound_where` 显示当前群号和完整会话标识，方便配置白名单。
 
 建议顺序：
 
