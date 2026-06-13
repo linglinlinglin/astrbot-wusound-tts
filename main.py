@@ -172,11 +172,13 @@ class WusoundTtsPlugin(Star):
 
     def _generate_mock_audio(self) -> GeneratedAudio:
         mock_audio_url = self._get_str("mock_audio_url", "")
-        if mock_audio_url:
+        if mock_audio_url.startswith(("http://", "https://")):
             return GeneratedAudio(
                 name=self._build_audio_name_from_url(mock_audio_url),
                 url=mock_audio_url,
             )
+        if mock_audio_url:
+            logger.warning(f"mock_audio_url 不是有效 URL，已改用本地 WAV: {mock_audio_url}")
 
         output_dir = Path(get_astrbot_temp_path()) / "wusound_tts_mock"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,11 +225,14 @@ class WusoundTtsPlugin(Star):
                 return Record.fromFileSystem(str(audio.path))
             raise ValueError("没有可发送的语音来源")
 
-        if audio.url and self._get_bool("prefer_remote_url", True):
+        if audio.url and self._is_http_url(audio.url) and self._get_bool(
+            "prefer_remote_url",
+            True,
+        ):
             return File(name=audio.name, url=audio.url)
         if audio.path:
             return File(name=audio.name, file=str(audio.path))
-        if audio.url:
+        if audio.url and self._is_http_url(audio.url):
             return File(name=audio.name, url=audio.url)
         raise ValueError("没有可发送的音频文件来源")
 
@@ -373,6 +378,9 @@ class WusoundTtsPlugin(Star):
             or "```" in lowered
             or "[CQ:" in text
         )
+
+    def _is_http_url(self, value: str) -> bool:
+        return str(value).startswith(("http://", "https://"))
 
     def _get_secret(self, key: str, env_name: str) -> str:
         return self._get_str(key, "") or os.getenv(env_name, "")

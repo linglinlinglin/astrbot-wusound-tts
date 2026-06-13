@@ -58,6 +58,7 @@ mock_mode: true
 send_as: file
 use_context_send_message: true
 prefer_remote_url: false
+mock_audio_url: 留空
 ```
 
 开启后插件不会调用悟声 API，也不会调用翻译 LLM，只会生成一个 1 秒 WAV 测试音频并尝试发送。这样可以确认问题到底在悟声接口，还是 AstrBot/平台发送文件链路。
@@ -68,6 +69,8 @@ prefer_remote_url: false
 mock_audio_url: https://example.com/test.mp3
 prefer_remote_url: true
 ```
+
+不要把 `mock_audio_url` 填成 `true`。它只能留空，或者填写一个以 `http://`、`https://` 开头的真实音频地址。
 
 ## 悟声接口适配
 
