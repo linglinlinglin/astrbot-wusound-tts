@@ -27,6 +27,25 @@ voice_id: 悟声语音角色 ID
 WUSOUND_API_KEY=你的悟声 API Key
 ```
 
+## 白名单
+
+建议至少配置 `allowed_group_ids`，避免插件在所有群聊里自动生成语音。
+
+```text
+allowed_group_ids:
+123456789
+987654321
+```
+
+也可以填写完整会话标识：
+
+```text
+allowed_origins:
+aiocqhttp:GroupMessage:123456789
+```
+
+两个白名单都留空时，插件会在所有会话生效。只要任意一个白名单命中，插件就会工作。自动 TTS 和 `/wusound_*_test` 测试命令都会受白名单限制。
+
 ## 常用配置
 
 ```text
@@ -35,11 +54,66 @@ tts_endpoint: https://v1.wusound.cn/api/tts/simple-generate
 voice_id: 你的悟声角色 ID
 prompt_id: 可选的风格 ID
 audio_format: mp3
+mock_mode: false
+send_as: file
+use_context_send_message: true
+prefer_remote_url: true
 max_output_tokens: 80
 translate_to_japanese: true
 ```
 
 `max_output_tokens` 是短回复阈值。超过这个估算 token 数就不会生成音频，避免长回复拖慢群聊。
+
+`prefer_remote_url` 建议保持开启。悟声会返回公网 mp3 地址，直接让平台从 URL 发送文件通常比先下载到 AstrBot 本地再发送更稳定，尤其是 Docker、远程适配器或 OneBot 分离部署时。
+
+`send_as` 默认是 `file`，会发送音频文件。可以改成 `record` 尝试直接发送语音，但不同平台对语音格式和组件支持差异很大，建议先用文件跑通。
+
+## 零消耗 Mock 测试
+
+如果要排查“悟声已扣积分，但群里没有音频”的问题，先开启：
+
+```text
+mock_mode: true
+send_as: file
+use_context_send_message: true
+prefer_remote_url: false
+mock_audio_url: 留空
+```
+
+开启后插件不会调用悟声 API，也不会调用翻译 LLM，只会生成一个 1 秒 WAV 测试音频并尝试发送。这样可以确认问题到底在悟声接口，还是 AstrBot/平台发送文件链路。
+
+如果你想测试远程 URL 发送，也可以填写：
+
+```text
+mock_audio_url: https://example.com/test.mp3
+prefer_remote_url: true
+```
+
+不要把 `mock_audio_url` 填成 `true`。它只能留空，或者填写一个以 `http://`、`https://` 开头的真实音频地址。
+
+## 测试命令
+
+插件提供了三个零消耗测试命令：
+
+```text
+/wusound_test
+/wusound_file_test
+/wusound_record_test
+/wusound_where
+```
+
+`/wusound_test` 使用当前 `send_as` 配置。  
+`/wusound_file_test` 强制发送文件，用于确认文件链路。  
+`/wusound_record_test` 强制发送语音，用于确认 QQ/OneBot 是否支持语音气泡。
+`/wusound_where` 显示当前群号和完整会话标识，方便配置白名单。
+
+建议顺序：
+
+```text
+1. 先运行 /wusound_file_test
+2. 文件能发后，运行 /wusound_record_test
+3. record 成功后，再考虑接回悟声真实音频
+```
 
 ## 悟声接口适配
 
@@ -68,15 +142,16 @@ translate_to_japanese: true
 AstrBot AI 回复
 -> 插件读取回复纯文本
 -> 估算 token 数并判断是否低于阈值
+-> 如果 mock_mode=true，直接生成测试音频
 -> 使用当前会话 LLM 翻译成日语
 -> 调用悟声实时 TTS
--> 下载或解析音频
--> 以文件形式发送到当前会话
+-> 优先读取悟声返回的远程 mp3 URL
+-> 使用 AstrBot 主动消息接口发送到当前会话
 ```
 
 ## 已知限制
 
 - 翻译依赖当前会话可用的 LLM；如果没有可用 LLM，插件会直接把原文送去 TTS。
-- 不同平台对文件消息的支持不同，OneBot 通常可用，其他平台需要实测。
+- 不同平台对文件消息和语音消息的支持不同；如果文件能发、语音不能发，通常是平台适配器限制。
 - 当前 token 统计是轻量估算，不是精确模型 token 计数。
 - 悟声接口字段如果与默认值不一致，优先通过 `payload_template` 适配。
