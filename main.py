@@ -117,6 +117,38 @@ class WusoundTtsPlugin(Star):
             f"allowed: {is_allowed}"
         )
 
+    @filter.command("wusound_preview")
+    async def wusound_preview(self, event: AstrMessageEvent):
+        """预览翻译结果，不调用悟声 API，用于排查文本质量。"""
+        if not self._get_bool("enabled", True):
+            yield event.plain_result("插件未启用。")
+            return
+        if not self._is_event_allowed(event):
+            yield event.plain_result("当前会话不在白名单中。")
+            return
+
+        source_text = self._extract_sent_plain_text(event)
+        if not source_text:
+            yield event.plain_result("未读取到 AI 回复文本。")
+            return
+
+        token_count = self._estimate_token_count(source_text)
+        would_trigger = "会" if self._should_generate_audio(source_text) else "不会"
+
+        if self._get_bool("translate_to_japanese", True):
+            yield event.plain_result("正在翻译，请稍候...")
+            translated = await self._translate_to_japanese(event, source_text)
+        else:
+            translated = "(翻译已关闭)"
+
+        yield event.plain_result(
+            "----- 悟声 TTS 文本预览 -----\n"
+            f"【原始回复】(token: {token_count}, {would_trigger}触发TTS)\n"
+            f"{source_text}\n\n"
+            f"【翻译结果】\n"
+            f"{translated}"
+        )
+
     async def _run_mock_send_test(
         self,
         event: AstrMessageEvent,
@@ -306,6 +338,8 @@ class WusoundTtsPlugin(Star):
             await self.initialize()
         if self.session is None:
             raise RuntimeError("aiohttp session 初始化失败")
+
+        logger.info(f"悟声 TTS 请求文本({len(spoken_text)}字): {spoken_text}")
 
         api_key = self._get_secret("api_key", "WUSOUND_API_KEY")
         if not api_key:
