@@ -372,14 +372,26 @@ class WusoundTtsPlugin(Star):
         audio: GeneratedAudio,
         send_as: str | None = None,
     ) -> None:
+        send_as = (send_as or self._get_str("send_as", "file")).lower()
+        # record 模式需要本地文件，不能直接用远程 URL
+        if send_as == "record" and audio.url and not audio.path:
+            audio_bytes = await self._download_audio(audio.url)
+            audio = self._save_audio_file(audio_bytes, fallback_name=audio.name)
         component = self._build_audio_component(audio, send_as=send_as)
         message_chain = MessageChain([component])
 
-        if self._get_bool("use_context_send_message", True):
-            await self.context.send_message(event.unified_msg_origin, message_chain)
-            return
-
-        await event.send(message_chain)
+        try:
+            if self._get_bool("use_context_send_message", True):
+                await self.context.send_message(event.unified_msg_origin, message_chain)
+            else:
+                await event.send(message_chain)
+        finally:
+            # 发送后清理本地音频文件，避免磁盘堆积
+            if audio.path and audio.path.exists():
+                try:
+                    audio.path.unlink()
+                except OSError:
+                    logger.debug(f"清理音频文件失败: {audio.path}")
 
     def _build_audio_component(
         self,
@@ -390,10 +402,10 @@ class WusoundTtsPlugin(Star):
         if send_as == "record":
             from astrbot.api.message_components import Record
 
-            if audio.url:
-                return Record.fromURL(audio.url)
             if audio.path:
                 return Record.fromFileSystem(str(audio.path))
+            if audio.url:
+                return Record.fromURL(audio.url)
             raise ValueError("没有可发送的语音来源")
 
         if audio.url and self._is_http_url(audio.url) and self._get_bool(
