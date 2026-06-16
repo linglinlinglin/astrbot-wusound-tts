@@ -117,6 +117,38 @@ class WusoundTtsPlugin(Star):
             f"allowed: {is_allowed}"
         )
 
+    @filter.command("wusound_preview")
+    async def wusound_preview(self, event: AstrMessageEvent):
+        """预览翻译结果，不调用悟声 API，用于排查文本质量。"""
+        if not self._get_bool("enabled", True):
+            yield event.plain_result("插件未启用。")
+            return
+        if not self._is_event_allowed(event):
+            yield event.plain_result("当前会话不在白名单中。")
+            return
+
+        source_text = self._extract_sent_plain_text(event)
+        if not source_text:
+            yield event.plain_result("未读取到 AI 回复文本。")
+            return
+
+        token_count = self._estimate_token_count(source_text)
+        would_trigger = "会" if self._should_generate_audio(source_text) else "不会"
+
+        if self._get_bool("translate_to_japanese", True):
+            yield event.plain_result("正在翻译，请稍候...")
+            translated = await self._translate_to_japanese(event, source_text)
+        else:
+            translated = "(翻译已关闭)"
+
+        yield event.plain_result(
+            "----- 悟声 TTS 文本预览 -----\n"
+            f"【原始回复】(token: {token_count}, {would_trigger}触发TTS)\n"
+            f"{source_text}\n\n"
+            f"【翻译结果】\n"
+            f"{translated}"
+        )
+
     async def _run_mock_send_test(
         self,
         event: AstrMessageEvent,
@@ -290,8 +322,15 @@ class WusoundTtsPlugin(Star):
         prompt = self._get_str("translation_prompt", "")
         if not prompt:
             prompt = (
-                "请将下面这段聊天回复翻译成自然、适合口语朗读的日语。"
-                "只输出日语译文，不要解释，不要加引号，不要保留中文。\n\n{text}"
+                "You are a strict translator. Translate the following text into "
+                "natural spoken Japanese.\n\n"
+                "Rules:\n"
+                "1. Output ONLY the Japanese translation, nothing else\n"
+                "2. Do NOT add prefixes like 'Translation:' or 'Japanese:'\n"
+                "3. Do NOT explain your translation choices\n"
+                "4. Do NOT use quotes, brackets, or markdown formatting\n"
+                "5. Do NOT output multiple versions\n\n"
+                "Text: {text}"
             )
 
         response = await provider.text_chat(
@@ -299,6 +338,7 @@ class WusoundTtsPlugin(Star):
             session_id="",
         )
         translated_text = getattr(response, "completion_text", None) or str(response)
+        translated_text = self._extract_japanese(translated_text) or text
         return self._clean_text(translated_text) or text
 
     async def _generate_audio(self, spoken_text: str) -> GeneratedAudio:
@@ -306,6 +346,8 @@ class WusoundTtsPlugin(Star):
             await self.initialize()
         if self.session is None:
             raise RuntimeError("aiohttp session 初始化失败")
+
+        logger.info(f"悟声 TTS 请求文本({len(spoken_text)}字): {spoken_text}")
 
         api_key = self._get_secret("api_key", "WUSOUND_API_KEY")
         if not api_key:
@@ -551,6 +593,30 @@ class WusoundTtsPlugin(Star):
     def _clean_text(self, text: str) -> str:
         compact_text = re.sub(r"\s+", " ", str(text or "")).strip()
         return compact_text.strip("\"'`“”‘’")
+
+    def _extract_japanese(self, text: str) -> str:
+        """从 LLM 翻译结果中提取纯日语，过滤掉解释说明等中文杂质。"""
+        if not text:
+            return ""
+        # 1) 优先提取「」中的日语文本（LLM 常把译文放在括号内）
+        bracketed = re.findall(r"「([^」]*)」", text)
+        if bracketed:
+            return bracketed[0]
+        # 2) 去除 Markdown 格式
+        text = re.sub(r"\*{1,3}|_{1,3}|`+", "", text)
+        # 3) 去除常见中文前缀
+        text = re.sub(r"^(日语)?翻译[：:]\s*", "", text)
+        text = re.sub(r"^(日文|译文|翻译结果)[：:]\s*", "", text)
+        # 4) 按行取第一条含假名的行
+        for line in text.split("\n"):
+            line = line.strip()
+            if line and re.search(r"[\u3040-\u30ff]", line):
+                return line
+        # 5) 兜底：取含假名的连续片段
+        match = re.search(r"[\u3040-\u30ff\u4e00-\u9fff～〜！？。、…\w]+", text)
+        if match:
+            return match.group(0)
+        return text
 
     def _looks_like_non_spoken_text(self, text: str) -> bool:
         lowered = text.lower()
